@@ -1,0 +1,10 @@
+﻿{
+  "LogDirectory": "logs",
+  "ArchiveDirectory": "Archive",
+  "KeepDays": 30,
+  "MaxFileSizeMB": 50,
+  "EnableConsole": true,
+  "EnableFile": true,
+  "EnableDebug": true,
+  "Environment": "DEV"
+}
