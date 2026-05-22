@@ -1,12 +1,61 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <TargetFramework>netstandard2.0</TargetFramework>
-  </PropertyGroup>
+	<PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="System.Text.Json" Version="10.0.8" />
-    <PackageReference Include="System.Threading.Channels" Version="10.0.8" />
-  </ItemGroup>
+		<!-- 基础 -->
+		<TargetFramework>netstandard2.0</TargetFramework>
+		<LangVersion>7.3</LangVersion>
+		<Nullable>disable</Nullable>
+
+		<!-- NuGet -->
+		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+
+		<PackageId>SNetLogs</PackageId>
+
+		<Version>1.0.0</Version>
+
+		<Authors>shengbi</Authors>
+
+		<Company>shengbi</Company>
+
+		<Description>
+			Enterprise High Performance Logging System for .NET
+		</Description>
+
+		<PackageTags>
+			logging;logger;mes;plc;iot;industrial
+		</PackageTags>
+
+		<RepositoryUrl>
+			https://github.com/Countonme/SNetLogs
+		</RepositoryUrl>
+
+		<PackageProjectUrl>
+			https://github.com/Countonme/SNetLogs
+		</PackageProjectUrl>
+
+		<PackageLicenseExpression>MIT</PackageLicenseExpression>
+
+		<PackageReadmeFile>README.md</PackageReadmeFile>
+
+		<PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+
+		<!-- 可选 -->
+		<PackageReleaseNotes>
+			Initial release.
+		</PackageReleaseNotes>
+
+	</PropertyGroup>
+
+	<!-- README 打包 -->
+	<ItemGroup>
+		<None Include="README.md" Pack="true" PackagePath="\" />
+	</ItemGroup>
+
+	<!-- 依赖 -->
+	<ItemGroup>
+		<PackageReference Include="System.Text.Json" Version="10.0.8" />
+		<PackageReference Include="System.Threading.Channels" Version="10.0.8" />
+	</ItemGroup>
 
 </Project>
