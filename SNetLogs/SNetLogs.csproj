@@ -44,6 +44,8 @@
 		<PackageReleaseNotes>
 			Initial release.
 		</PackageReleaseNotes>
+		<AssemblyVersion>1.0.0.2</AssemblyVersion>
+		<FileVersion>1.0.0.2</FileVersion>
 
 	</PropertyGroup>
 

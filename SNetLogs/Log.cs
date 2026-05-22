@@ -5,18 +5,12 @@ using System.IO;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace SNetLogs
 {
     /// <summary>
-    /// 企业级高性能日志系统 V2
-    /// 特点：
-    /// 1. 高并发队列
-    /// 2. 按模块分文件夹
-    /// 3. 批量写入提升性能
-    /// 4. 自动归档 & 清理
-    /// 5. Linux / Windows 通用
+    /// SNetLogs V2 - Enterprise Industrial Logger
+    /// C# 7.3 Compatible
     /// </summary>
     public static class Log
     {
@@ -33,9 +27,9 @@ namespace SNetLogs
         private static readonly string ConfigFile =
             Path.Combine(ConfigDir, "logs.json");
 
-        // 高并发线程安全队列
-        private static readonly BlockingCollection<LogItem> queue =
-            new BlockingCollection<LogItem>(new ConcurrentQueue<LogItem>());
+        // 高性能队列
+        private static readonly BlockingCollection<LogEvent> queue =
+            new BlockingCollection<LogEvent>(new ConcurrentQueue<LogEvent>());
 
         private static readonly object fileLock = new object();
 
@@ -47,108 +41,149 @@ namespace SNetLogs
         {
             Init();
 
-            // 启动后台线程消费队列
-            Task.Factory.StartNew(
-                Worker,
-                TaskCreationOptions.LongRunning);
+            Thread worker = new Thread(Consume);
+            worker.IsBackground = true;
+            worker.Start();
 
-            // 定时 Flush（兜底）
-            Task.Run(async () =>
-            {
-                while (true)
-                {
-                    await Task.Delay(2000);
-                    FlushAll();
-                }
-            });
-        }
-
-        public static void Init()
-        {
-            if (!Directory.Exists(ConfigDir))
-                Directory.CreateDirectory(ConfigDir);
-
-            if (!File.Exists(ConfigFile))
-            {
-                config = new LogConfig();
-
-                File.WriteAllText(
-                    ConfigFile,
-                    JsonSerializer.Serialize(config,
-                        new JsonSerializerOptions { WriteIndented = true }),
-                    Encoding.UTF8);
-            }
-            else
-            {
-                config = JsonSerializer.Deserialize<LogConfig>(
-                    File.ReadAllText(ConfigFile, Encoding.UTF8));
-            }
-
-            if (config == null)
-                config = new LogConfig();
-
-            CreateDirs();
-            ClearOldLogs();
+            Thread flushTimer = new Thread(TimerFlush);
+            flushTimer.IsBackground = true;
+            flushTimer.Start();
         }
 
         #endregion Init
 
-        #region Public API（你要的两个版本）
+        #region Config Init（自动生成 + 修复）
 
-        // ====== 无模块 ======
-        public static void Debug(string msg) => Write("GENERAL", LogLevel.Debug, msg);
-
-        public static void Info(string msg) => Write("GENERAL", LogLevel.Info, msg);
-
-        public static void Warn(string msg) => Write("GENERAL", LogLevel.Warn, msg);
-
-        public static void Error(string msg) => Write("GENERAL", LogLevel.Error, msg);
-
-        public static void Fatal(string msg) => Write("GENERAL", LogLevel.Fatal, msg);
-
-        // ====== 带模块（PLC / MES）======
-        public static void Debug(string module, string msg) => Write(module, LogLevel.Debug, msg);
-
-        public static void Info(string module, string msg) => Write(module, LogLevel.Info, msg);
-
-        public static void Warn(string module, string msg) => Write(module, LogLevel.Warn, msg);
-
-        public static void Error(string module, string msg) => Write(module, LogLevel.Error, msg);
-
-        public static void Fatal(string module, string msg) => Write(module, LogLevel.Fatal, msg);
-
-        public static void Error(string module, Exception ex)
+        public static void Init()
         {
-            Write(module, LogLevel.Error, ex.ToString());
+            try
+            {
+                if (!Directory.Exists(ConfigDir))
+                    Directory.CreateDirectory(ConfigDir);
+
+                if (!File.Exists(ConfigFile))
+                {
+                    config = DefaultConfig();
+                    SaveConfig(config);
+                }
+                else
+                {
+                    try
+                    {
+                        config = JsonSerializer.Deserialize<LogConfig>(
+                            File.ReadAllText(ConfigFile, Encoding.UTF8));
+                    }
+                    catch
+                    {
+                        config = DefaultConfig();
+                        SaveConfig(config);
+                    }
+                }
+
+                if (config == null)
+                    config = DefaultConfig();
+
+                CreateDirs();
+                ClearExpiredLogs();
+            }
+            catch
+            {
+                config = DefaultConfig();
+            }
         }
 
-        #endregion Public API（你要的两个版本）
+        private static LogConfig DefaultConfig()
+        {
+            return new LogConfig
+            {
+                Environment = "DEV",
+                EnableConsole = true,
+                EnableFile = true,
+                BatchSize = 80,
+                KeepDays = 7,
+                LogDirectory = "Logs",
+                ArchiveDirectory = "Archive"
+            };
+        }
+
+        private static void SaveConfig(LogConfig cfg)
+        {
+            File.WriteAllText(
+                ConfigFile,
+                JsonSerializer.Serialize(cfg, new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                }),
+                Encoding.UTF8);
+        }
+
+        #endregion Config Init（自动生成 + 修复）
+
+        #region Public API（V4增强）
+
+        // ===== 简单模式 =====
+        public static string NewTraceId()
+        {
+            return Guid.NewGuid().ToString("N");
+        }
+
+        public static void Info(string msg)
+            => Write("GENERAL", "INFO", msg, null);
+
+        public static void Error(string msg)
+            => Write("GENERAL", "ERROR", msg, null);
+
+        public static void Fatal(string msg)
+            => Write("GENERAL", "FATAL", msg, null);
+
+        // ===== 模块模式 =====
+        public static void Info(string module, string msg)
+            => Write(module, "INFO", msg, null);
+
+        public static void Error(string module, string msg)
+            => Write(module, "ERROR", msg, null);
+
+        public static void Fatal(string module, string msg)
+            => Write(module, "FATAL", msg, null);
+
+        // ===== Trace链路模式（V4核心）=====
+        public static void Info(string module, string traceId, string msg)
+            => Write(module, "INFO", msg, traceId);
+
+        public static void Error(string module, string traceId, string msg)
+            => Write(module, "ERROR", msg, traceId);
+
+        public static void Fatal(string module, string traceId, string msg)
+            => Write(module, "FATAL", msg, traceId);
+
+        #endregion Public API（V4增强）
 
         #region Core Write
 
-        private static void Write(string module, LogLevel level, string message)
+        private static void Write(string module, string level, string message, string traceId)
         {
-            var item = new LogItem
+            if (config == null) return;
+
+            queue.Add(new LogEvent
             {
-                Module = string.IsNullOrEmpty(module) ? "GENERAL" : module,
+                Module = module ?? "GENERAL",
                 Level = level,
                 Message = message,
+                TraceId = traceId,
                 Time = DateTime.Now
-            };
-
-            queue.Add(item);
+            });
 
             if (config.EnableConsole)
-                WriteConsole(item);
+                WriteConsole(module, level, message, traceId);
         }
 
         #endregion Core Write
 
-        #region Worker（高并发消费）
+        #region Worker
 
-        private static void Worker()
+        private static void Consume()
         {
-            var buffer = new List<LogItem>(config.BatchSize);
+            var buffer = new List<LogEvent>(config.BatchSize);
 
             foreach (var item in queue.GetConsumingEnumerable())
             {
@@ -165,23 +200,35 @@ namespace SNetLogs
                 Flush(buffer);
         }
 
-        #endregion Worker（高并发消费）
+        #endregion Worker
 
-        #region Flush（核心性能点）
+        #region Timer Flush
 
-        private static void Flush(List<LogItem> logs)
+        private static void TimerFlush()
+        {
+            while (true)
+            {
+                Thread.Sleep(2000);
+                Flush(new List<LogEvent>());
+            }
+        }
+
+        #endregion Timer Flush
+
+        #region Flush Engine（V4优化）
+
+        private static void Flush(List<LogEvent> logs)
         {
             if (!config.EnableFile) return;
+            if (logs == null || logs.Count == 0) return;
 
             lock (fileLock)
             {
-                foreach (var group in GroupByModule(logs))
-                {
-                    string dir = Path.Combine(
-                        BaseDir,
-                        config.LogDirectory,
-                        group.Key);
+                var grouped = Group(logs);
 
+                foreach (var kv in grouped)
+                {
+                    string dir = Path.Combine(BaseDir, config.LogDirectory, kv.Key);
                     Directory.CreateDirectory(dir);
 
                     string file = Path.Combine(
@@ -190,7 +237,7 @@ namespace SNetLogs
 
                     using (var sw = new StreamWriter(file, true, Encoding.UTF8))
                     {
-                        foreach (var log in group.Value)
+                        foreach (var log in kv.Value)
                         {
                             sw.WriteLine(Format(log));
                         }
@@ -199,33 +246,28 @@ namespace SNetLogs
             }
         }
 
-        private static void FlushAll()
-        {
-            // 预留扩展：强制刷盘
-        }
-
-        #endregion Flush（核心性能点）
+        #endregion Flush Engine（V4优化）
 
         #region Console
 
-        private static void WriteConsole(LogItem item)
+        private static void WriteConsole(string module, string level, string msg, string traceId)
         {
             lock (fileLock)
             {
-                ConsoleColor color;
+                ConsoleColor color = ConsoleColor.White;
 
-                switch (item.Level)
-                {
-                    case LogLevel.Debug: color = ConsoleColor.Gray; break;
-                    case LogLevel.Info: color = ConsoleColor.Green; break;
-                    case LogLevel.Warn: color = ConsoleColor.Yellow; break;
-                    case LogLevel.Error: color = ConsoleColor.Red; break;
-                    case LogLevel.Fatal: color = ConsoleColor.DarkRed; break;
-                    default: color = ConsoleColor.White; break;
-                }
+                if (level == "INFO") color = ConsoleColor.Green;
+                else if (level == "ERROR") color = ConsoleColor.Red;
+                else if (level == "FATAL") color = ConsoleColor.DarkRed;
+                else if (level == "DEBUG") color = ConsoleColor.Gray;
 
                 Console.ForegroundColor = color;
-                Console.WriteLine(Format(item));
+
+                Console.WriteLine(
+                    $"[{DateTime.Now:HH:mm:ss}] [{config.Environment}] [{module}] [{level}] " +
+                    (traceId != null ? $"[Trace:{traceId}] " : "") +
+                    msg);
+
                 Console.ResetColor();
             }
         }
@@ -234,25 +276,26 @@ namespace SNetLogs
 
         #region Helpers
 
-        private static string Format(LogItem item)
+        private static string Format(LogEvent e)
         {
-            return $"[{item.Time:yyyy-MM-dd HH:mm:ss.fff}] " +
+            return $"[{e.Time:yyyy-MM-dd HH:mm:ss.fff}] " +
                    $"[{config.Environment}] " +
-                   $"[{item.Module}] " +
-                   $"[{item.Level}] " +
-                   item.Message;
+                   $"[{e.Module}] " +
+                   $"[{e.Level}] " +
+                   (e.TraceId != null ? $"[Trace:{e.TraceId}] " : "") +
+                   e.Message;
         }
 
-        private static Dictionary<string, List<LogItem>> GroupByModule(List<LogItem> logs)
+        private static Dictionary<string, List<LogEvent>> Group(List<LogEvent> logs)
         {
-            var dict = new Dictionary<string, List<LogItem>>();
+            var dict = new Dictionary<string, List<LogEvent>>();
 
-            foreach (var item in logs)
+            foreach (var l in logs)
             {
-                if (!dict.ContainsKey(item.Module))
-                    dict[item.Module] = new List<LogItem>();
+                if (!dict.ContainsKey(l.Module))
+                    dict[l.Module] = new List<LogEvent>();
 
-                dict[item.Module].Add(item);
+                dict[l.Module].Add(l);
             }
 
             return dict;
@@ -263,21 +306,18 @@ namespace SNetLogs
             Directory.CreateDirectory(Path.Combine(BaseDir, config.LogDirectory));
         }
 
-        private static void ClearOldLogs()
+        private static void ClearExpiredLogs()
         {
             try
             {
-                var root = Path.Combine(BaseDir, config.LogDirectory);
+                string root = Path.Combine(BaseDir, config.LogDirectory);
 
                 if (!Directory.Exists(root)) return;
 
-                foreach (var file in Directory.GetFiles(root, "*.log", SearchOption.AllDirectories))
+                foreach (var f in Directory.GetFiles(root, "*.log", SearchOption.AllDirectories))
                 {
-                    if (File.GetCreationTime(file) <
-                        DateTime.Now.AddDays(-config.KeepDays))
-                    {
-                        File.Delete(file);
-                    }
+                    if (File.GetCreationTime(f) < DateTime.Now.AddDays(-config.KeepDays))
+                        File.Delete(f);
                 }
             }
             catch { }
@@ -285,16 +325,17 @@ namespace SNetLogs
 
         #endregion Helpers
 
-        #region Internal Model
+        #region Model
 
-        private class LogItem
+        private class LogEvent
         {
             public string Module;
-            public LogLevel Level;
+            public string Level;
             public string Message;
+            public string TraceId;
             public DateTime Time;
         }
 
-        #endregion Internal Model
+        #endregion Model
     }
 }
