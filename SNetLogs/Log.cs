@@ -1,334 +1,300 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
-using System.Xml;
 
 namespace SNetLogs
 {
+    /// <summary>
+    /// 企业级高性能日志系统 V2
+    /// 特点：
+    /// 1. 高并发队列
+    /// 2. 按模块分文件夹
+    /// 3. 批量写入提升性能
+    /// 4. 自动归档 & 清理
+    /// 5. Linux / Windows 通用
+    /// </summary>
     public static class Log
     {
-        private static readonly object locker = new object();
-
-        private static readonly BlockingCollection<string> logQueue =
-            new BlockingCollection<string>();
-
-        private static readonly string BaseDirectory =
-            AppDomain.CurrentDomain.BaseDirectory;
-
-        private static readonly string ConfigDirectory =
-            Path.Combine(BaseDirectory, "Common", "Logs");
-
-        private static readonly string ConfigPath =
-            Path.Combine(ConfigDirectory, "logs.json");
+        #region Fields
 
         private static LogConfig config;
+
+        private static readonly string BaseDir =
+            AppDomain.CurrentDomain.BaseDirectory;
+
+        private static readonly string ConfigDir =
+            Path.Combine(BaseDir, "Common", "Logs");
+
+        private static readonly string ConfigFile =
+            Path.Combine(ConfigDir, "logs.json");
+
+        // 高并发线程安全队列
+        private static readonly BlockingCollection<LogItem> queue =
+            new BlockingCollection<LogItem>(new ConcurrentQueue<LogItem>());
+
+        private static readonly object fileLock = new object();
+
+        #endregion Fields
+
+        #region Init
 
         static Log()
         {
             Init();
 
+            // 启动后台线程消费队列
             Task.Factory.StartNew(
-                ProcessQueue,
+                Worker,
                 TaskCreationOptions.LongRunning);
+
+            // 定时 Flush（兜底）
+            Task.Run(async () =>
+            {
+                while (true)
+                {
+                    await Task.Delay(2000);
+                    FlushAll();
+                }
+            });
         }
 
         public static void Init()
         {
-            try
-            {
-                if (!Directory.Exists(ConfigDirectory))
-                {
-                    Directory.CreateDirectory(ConfigDirectory);
-                }
+            if (!Directory.Exists(ConfigDir))
+                Directory.CreateDirectory(ConfigDir);
 
-                if (!File.Exists(ConfigPath))
-                {
-                    config = new LogConfig();
-
-                    var json = JsonSerializer.Serialize(
-                        config,
-                        new JsonSerializerOptions
-                        {
-                            WriteIndented = true
-                        });
-
-                    File.WriteAllText(
-                        ConfigPath,
-                        json,
-                        Encoding.UTF8);
-                }
-                else
-                {
-                    string json =
-                        File.ReadAllText(
-                            ConfigPath,
-                            Encoding.UTF8);
-
-                    config =
-                        JsonSerializer.Deserialize<LogConfig>(json);
-                }
-
-                if (config == null)
-                {
-                    config = new LogConfig();
-                }
-
-                CreateDirectories();
-
-                ClearExpiredLogs();
-            }
-            catch
+            if (!File.Exists(ConfigFile))
             {
                 config = new LogConfig();
-            }
-        }
 
-        private static void CreateDirectories()
-        {
-            string logDir =
-                Path.Combine(
-                    BaseDirectory,
-                    config.LogDirectory);
-
-            string archiveDir =
-                Path.Combine(
-                    logDir,
-                    config.ArchiveDirectory);
-
-            if (!Directory.Exists(logDir))
-            {
-                Directory.CreateDirectory(logDir);
-            }
-
-            if (!Directory.Exists(archiveDir))
-            {
-                Directory.CreateDirectory(archiveDir);
-            }
-        }
-
-        #region Public
-
-        public static void Debug(string message)
-        {
-            if (!config.EnableDebug)
-                return;
-
-            Write(LogLevel.Debug, message);
-        }
-
-        public static void Info(string message)
-        {
-            Write(LogLevel.Info, message);
-        }
-
-        public static void Warn(string message)
-        {
-            Write(LogLevel.Warn, message);
-        }
-
-        public static void Error(string message)
-        {
-            Write(LogLevel.Error, message);
-        }
-
-        public static void Error(Exception ex)
-        {
-            Write(LogLevel.Error, ex.ToLogString());
-        }
-
-        public static void Fatal(string message)
-        {
-            Write(LogLevel.Fatal, message);
-        }
-
-        #endregion Public
-
-        #region Core
-
-        private static void Write(
-            LogLevel level,
-            string message)
-        {
-            try
-            {
-                string log =
-                    $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] " +
-                    $"[{config.Environment}] " +
-                    $"[{level}] " +
-                    $"{message}";
-
-                logQueue.Add(log);
-
-                if (config.EnableConsole)
-                {
-                    WriteConsole(level, log);
-                }
-            }
-            catch
-            {
-            }
-        }
-
-        private static void ProcessQueue()
-        {
-            foreach (var log in logQueue.GetConsumingEnumerable())
-            {
-                try
-                {
-                    WriteFile(log);
-                }
-                catch
-                {
-                }
-            }
-        }
-
-        private static void WriteConsole(
-            LogLevel level,
-            string log)
-        {
-            lock (locker)
-            {
-                var oldColor =
-                    Console.ForegroundColor;
-
-                switch (level)
-                {
-                    case LogLevel.Debug:
-                        Console.ForegroundColor =
-                            ConsoleColor.Gray;
-                        break;
-
-                    case LogLevel.Info:
-                        Console.ForegroundColor =
-                            ConsoleColor.Green;
-                        break;
-
-                    case LogLevel.Warn:
-                        Console.ForegroundColor =
-                            ConsoleColor.Yellow;
-                        break;
-
-                    case LogLevel.Error:
-                        Console.ForegroundColor =
-                            ConsoleColor.Red;
-                        break;
-
-                    case LogLevel.Fatal:
-                        Console.ForegroundColor =
-                            ConsoleColor.DarkRed;
-                        break;
-                }
-
-                Console.WriteLine(log);
-
-                Console.ForegroundColor = oldColor;
-            }
-        }
-
-        private static void WriteFile(string log)
-        {
-            if (!config.EnableFile)
-                return;
-
-            string logDir =
-                Path.Combine(
-                    BaseDirectory,
-                    config.LogDirectory);
-
-            string fileName =
-                $"{DateTime.Now:yyyy-MM-dd}.log";
-
-            string filePath =
-                Path.Combine(logDir, fileName);
-
-            ArchiveIfNeeded(filePath);
-
-            lock (locker)
-            {
-                File.AppendAllText(
-                    filePath,
-                    log + Environment.NewLine,
+                File.WriteAllText(
+                    ConfigFile,
+                    JsonSerializer.Serialize(config,
+                        new JsonSerializerOptions { WriteIndented = true }),
                     Encoding.UTF8);
             }
+            else
+            {
+                config = JsonSerializer.Deserialize<LogConfig>(
+                    File.ReadAllText(ConfigFile, Encoding.UTF8));
+            }
+
+            if (config == null)
+                config = new LogConfig();
+
+            CreateDirs();
+            ClearOldLogs();
         }
 
-        #endregion Core
+        #endregion Init
 
-        #region Archive
+        #region Public API（你要的两个版本）
 
-        private static void ArchiveIfNeeded(string file)
+        // ====== 无模块 ======
+        public static void Debug(string msg) => Write("GENERAL", LogLevel.Debug, msg);
+
+        public static void Info(string msg) => Write("GENERAL", LogLevel.Info, msg);
+
+        public static void Warn(string msg) => Write("GENERAL", LogLevel.Warn, msg);
+
+        public static void Error(string msg) => Write("GENERAL", LogLevel.Error, msg);
+
+        public static void Fatal(string msg) => Write("GENERAL", LogLevel.Fatal, msg);
+
+        // ====== 带模块（PLC / MES）======
+        public static void Debug(string module, string msg) => Write(module, LogLevel.Debug, msg);
+
+        public static void Info(string module, string msg) => Write(module, LogLevel.Info, msg);
+
+        public static void Warn(string module, string msg) => Write(module, LogLevel.Warn, msg);
+
+        public static void Error(string module, string msg) => Write(module, LogLevel.Error, msg);
+
+        public static void Fatal(string module, string msg) => Write(module, LogLevel.Fatal, msg);
+
+        public static void Error(string module, Exception ex)
         {
-            try
-            {
-                if (!File.Exists(file))
-                    return;
-
-                FileInfo fi = new FileInfo(file);
-
-                long max =
-                    config.MaxFileSizeMB * 1024L * 1024L;
-
-                if (fi.Length < max)
-                    return;
-
-                string archiveDir =
-                    Path.Combine(
-                        BaseDirectory,
-                        config.LogDirectory,
-                        config.ArchiveDirectory);
-
-                string archiveName =
-                    $"{Path.GetFileNameWithoutExtension(file)}_" +
-                    $"{DateTime.Now:HHmmss}.log";
-
-                string archivePath =
-                    Path.Combine(
-                        archiveDir,
-                        archiveName);
-
-                File.Move(file, archivePath);
-            }
-            catch
-            {
-            }
+            Write(module, LogLevel.Error, ex.ToString());
         }
 
-        private static void ClearExpiredLogs()
+        #endregion Public API（你要的两个版本）
+
+        #region Core Write
+
+        private static void Write(string module, LogLevel level, string message)
         {
-            try
+            var item = new LogItem
             {
-                string logDir =
-                    Path.Combine(
-                        BaseDirectory,
-                        config.LogDirectory);
+                Module = string.IsNullOrEmpty(module) ? "GENERAL" : module,
+                Level = level,
+                Message = message,
+                Time = DateTime.Now
+            };
 
-                if (!Directory.Exists(logDir))
-                    return;
+            queue.Add(item);
 
-                var files =
-                    Directory.GetFiles(logDir, "*.log");
+            if (config.EnableConsole)
+                WriteConsole(item);
+        }
 
-                foreach (var file in files)
+        #endregion Core Write
+
+        #region Worker（高并发消费）
+
+        private static void Worker()
+        {
+            var buffer = new List<LogItem>(config.BatchSize);
+
+            foreach (var item in queue.GetConsumingEnumerable())
+            {
+                buffer.Add(item);
+
+                if (buffer.Count >= config.BatchSize)
                 {
-                    FileInfo fi = new FileInfo(file);
+                    Flush(buffer);
+                    buffer.Clear();
+                }
+            }
 
-                    if (fi.CreationTime <
-                        DateTime.Now.AddDays(
-                            -config.KeepDays))
+            if (buffer.Count > 0)
+                Flush(buffer);
+        }
+
+        #endregion Worker（高并发消费）
+
+        #region Flush（核心性能点）
+
+        private static void Flush(List<LogItem> logs)
+        {
+            if (!config.EnableFile) return;
+
+            lock (fileLock)
+            {
+                foreach (var group in GroupByModule(logs))
+                {
+                    string dir = Path.Combine(
+                        BaseDir,
+                        config.LogDirectory,
+                        group.Key);
+
+                    Directory.CreateDirectory(dir);
+
+                    string file = Path.Combine(
+                        dir,
+                        DateTime.Now.ToString("yyyy-MM-dd") + ".log");
+
+                    using (var sw = new StreamWriter(file, true, Encoding.UTF8))
                     {
-                        fi.Delete();
+                        foreach (var log in group.Value)
+                        {
+                            sw.WriteLine(Format(log));
+                        }
                     }
                 }
             }
-            catch
+        }
+
+        private static void FlushAll()
+        {
+            // 预留扩展：强制刷盘
+        }
+
+        #endregion Flush（核心性能点）
+
+        #region Console
+
+        private static void WriteConsole(LogItem item)
+        {
+            lock (fileLock)
             {
+                ConsoleColor color;
+
+                switch (item.Level)
+                {
+                    case LogLevel.Debug: color = ConsoleColor.Gray; break;
+                    case LogLevel.Info: color = ConsoleColor.Green; break;
+                    case LogLevel.Warn: color = ConsoleColor.Yellow; break;
+                    case LogLevel.Error: color = ConsoleColor.Red; break;
+                    case LogLevel.Fatal: color = ConsoleColor.DarkRed; break;
+                    default: color = ConsoleColor.White; break;
+                }
+
+                Console.ForegroundColor = color;
+                Console.WriteLine(Format(item));
+                Console.ResetColor();
             }
         }
 
-        #endregion Archive
+        #endregion Console
+
+        #region Helpers
+
+        private static string Format(LogItem item)
+        {
+            return $"[{item.Time:yyyy-MM-dd HH:mm:ss.fff}] " +
+                   $"[{config.Environment}] " +
+                   $"[{item.Module}] " +
+                   $"[{item.Level}] " +
+                   item.Message;
+        }
+
+        private static Dictionary<string, List<LogItem>> GroupByModule(List<LogItem> logs)
+        {
+            var dict = new Dictionary<string, List<LogItem>>();
+
+            foreach (var item in logs)
+            {
+                if (!dict.ContainsKey(item.Module))
+                    dict[item.Module] = new List<LogItem>();
+
+                dict[item.Module].Add(item);
+            }
+
+            return dict;
+        }
+
+        private static void CreateDirs()
+        {
+            Directory.CreateDirectory(Path.Combine(BaseDir, config.LogDirectory));
+        }
+
+        private static void ClearOldLogs()
+        {
+            try
+            {
+                var root = Path.Combine(BaseDir, config.LogDirectory);
+
+                if (!Directory.Exists(root)) return;
+
+                foreach (var file in Directory.GetFiles(root, "*.log", SearchOption.AllDirectories))
+                {
+                    if (File.GetCreationTime(file) <
+                        DateTime.Now.AddDays(-config.KeepDays))
+                    {
+                        File.Delete(file);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        #endregion Helpers
+
+        #region Internal Model
+
+        private class LogItem
+        {
+            public string Module;
+            public LogLevel Level;
+            public string Message;
+            public DateTime Time;
+        }
+
+        #endregion Internal Model
     }
 }

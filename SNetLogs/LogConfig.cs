@@ -46,5 +46,10 @@ namespace SNetLogs
         /// DEBUG DEV RUN PROD
         /// </summary>
         public string Environment { get; set; } = "RUN";
+
+        /// <summary>
+        /// 批量写关键参数
+        /// </summary>
+        public int BatchSize { get; set; } = 50;
     }
 }
