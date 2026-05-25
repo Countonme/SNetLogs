@@ -12,14 +12,14 @@
 
 		<PackageId>SNetLogs</PackageId>
 
-		<Version>1.0.4</Version>
+		<Version>1.0.5</Version>
 
 		<Authors>shengbi</Authors>
 
 		<Company>shengbi</Company>
 
 		<Description>
-			Enterprise High Performance Logging System for .NET
+			Enterprise-grade high-performance asynchronous logging framework for .NET applications, designed for industrial systems, MES, IoT, and large-scale backend services.
 		</Description>
 
 		<PackageTags>
@@ -44,8 +44,8 @@
 		<PackageReleaseNotes>
 			Initial release.
 		</PackageReleaseNotes>
-		<AssemblyVersion>1.0.0.2</AssemblyVersion>
-		<FileVersion>1.0.0.2</FileVersion>
+		<AssemblyVersion>1.0.0.5</AssemblyVersion>
+		<FileVersion>1.0.0.5</FileVersion>
 
 	</PropertyGroup>
 

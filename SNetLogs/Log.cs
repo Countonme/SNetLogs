@@ -9,7 +9,7 @@ using System.Threading;
 namespace SNetLogs
 {
     /// <summary>
-    /// SNetLogs V2 - Enterprise Industrial Logger
+    /// SNetLogs V5 - Enterprise Industrial Logger
     /// C# 7.3 Compatible
     /// </summary>
     public static class Log
@@ -27,11 +27,20 @@ namespace SNetLogs
         private static readonly string ConfigFile =
             Path.Combine(ConfigDir, "logs.json");
 
-        // 高性能队列
+        // 日志队列
         private static readonly BlockingCollection<LogEvent> queue =
-            new BlockingCollection<LogEvent>(new ConcurrentQueue<LogEvent>());
+            new BlockingCollection<LogEvent>(
+                new ConcurrentQueue<LogEvent>());
 
-        private static readonly object fileLock = new object();
+        // 缓冲区
+        private static readonly List<LogEvent> pendingBuffer =
+            new List<LogEvent>();
+
+        private static readonly object bufferLock =
+            new object();
+
+        private static readonly object fileLock =
+            new object();
 
         #endregion Fields
 
@@ -41,18 +50,25 @@ namespace SNetLogs
         {
             Init();
 
+            // 消费线程
             Thread worker = new Thread(Consume);
             worker.IsBackground = true;
             worker.Start();
 
+            // 定时Flush
             Thread flushTimer = new Thread(TimerFlush);
             flushTimer.IsBackground = true;
             flushTimer.Start();
+
+            // 自动清理过期日志
+            Thread cleanTimer = new Thread(TimerClearExpiredLogs);
+            cleanTimer.IsBackground = true;
+            cleanTimer.Start();
         }
 
         #endregion Init
 
-        #region Config Init（自动生成 + 修复）
+        #region Config Init
 
         public static void Init()
         {
@@ -71,7 +87,9 @@ namespace SNetLogs
                     try
                     {
                         config = JsonSerializer.Deserialize<LogConfig>(
-                            File.ReadAllText(ConfigFile, Encoding.UTF8));
+                            File.ReadAllText(
+                                ConfigFile,
+                                Encoding.UTF8));
                     }
                     catch
                     {
@@ -84,6 +102,8 @@ namespace SNetLogs
                     config = DefaultConfig();
 
                 CreateDirs();
+
+                // 启动时先清理一次
                 ClearExpiredLogs();
             }
             catch
@@ -110,22 +130,25 @@ namespace SNetLogs
         {
             File.WriteAllText(
                 ConfigFile,
-                JsonSerializer.Serialize(cfg, new JsonSerializerOptions
-                {
-                    WriteIndented = true
-                }),
+                JsonSerializer.Serialize(
+                    cfg,
+                    new JsonSerializerOptions
+                    {
+                        WriteIndented = true
+                    }),
                 Encoding.UTF8);
         }
 
-        #endregion Config Init（自动生成 + 修复）
+        #endregion Config Init
 
-        #region Public API（V4增强）
+        #region Public API
 
-        // ===== 简单模式 =====
         public static string NewTraceId()
         {
             return Guid.NewGuid().ToString("N");
         }
+
+        // ===== Simple =====
 
         public static void Info(string msg)
             => Write("GENERAL", "INFO", msg, null);
@@ -136,7 +159,8 @@ namespace SNetLogs
         public static void Fatal(string msg)
             => Write("GENERAL", "FATAL", msg, null);
 
-        // ===== 模块模式 =====
+        // ===== Module =====
+
         public static void Info(string module, string msg)
             => Write(module, "INFO", msg, null);
 
@@ -146,23 +170,38 @@ namespace SNetLogs
         public static void Fatal(string module, string msg)
             => Write(module, "FATAL", msg, null);
 
-        // ===== Trace链路模式（V4核心）=====
-        public static void Info(string module, string traceId, string msg)
+        // ===== Trace =====
+
+        public static void Info(
+            string module,
+            string traceId,
+            string msg)
             => Write(module, "INFO", msg, traceId);
 
-        public static void Error(string module, string traceId, string msg)
+        public static void Error(
+            string module,
+            string traceId,
+            string msg)
             => Write(module, "ERROR", msg, traceId);
 
-        public static void Fatal(string module, string traceId, string msg)
+        public static void Fatal(
+            string module,
+            string traceId,
+            string msg)
             => Write(module, "FATAL", msg, traceId);
 
-        #endregion Public API（V4增强）
+        #endregion Public API
 
         #region Core Write
 
-        private static void Write(string module, string level, string message, string traceId)
+        private static void Write(
+            string module,
+            string level,
+            string message,
+            string traceId)
         {
-            if (config == null) return;
+            if (config == null)
+                return;
 
             queue.Add(new LogEvent
             {
@@ -174,33 +213,38 @@ namespace SNetLogs
             });
 
             if (config.EnableConsole)
-                WriteConsole(module, level, message, traceId);
+                WriteConsole(
+                    module,
+                    level,
+                    message,
+                    traceId);
         }
 
         #endregion Core Write
 
-        #region Worker
+        #region Consume Worker
 
         private static void Consume()
         {
-            var buffer = new List<LogEvent>(config.BatchSize);
-
             foreach (var item in queue.GetConsumingEnumerable())
             {
-                buffer.Add(item);
-
-                if (buffer.Count >= config.BatchSize)
+                lock (bufferLock)
                 {
-                    Flush(buffer);
-                    buffer.Clear();
+                    pendingBuffer.Add(item);
+
+                    // 达到批量阈值立即写入
+                    if (pendingBuffer.Count >= config.BatchSize)
+                    {
+                        FlushInternal(
+                            new List<LogEvent>(pendingBuffer));
+
+                        pendingBuffer.Clear();
+                    }
                 }
             }
-
-            if (buffer.Count > 0)
-                Flush(buffer);
         }
 
-        #endregion Worker
+        #endregion Consume Worker
 
         #region Timer Flush
 
@@ -208,19 +252,60 @@ namespace SNetLogs
         {
             while (true)
             {
-                Thread.Sleep(2000);
-                Flush(new List<LogEvent>());
+                try
+                {
+                    Thread.Sleep(2000);
+
+                    lock (bufferLock)
+                    {
+                        if (pendingBuffer.Count > 0)
+                        {
+                            FlushInternal(
+                                new List<LogEvent>(pendingBuffer));
+
+                            pendingBuffer.Clear();
+                        }
+                    }
+                }
+                catch
+                {
+                }
             }
         }
 
         #endregion Timer Flush
 
-        #region Flush Engine（V4优化）
+        #region Auto Clear Logs
 
-        private static void Flush(List<LogEvent> logs)
+        private static void TimerClearExpiredLogs()
         {
-            if (!config.EnableFile) return;
-            if (logs == null || logs.Count == 0) return;
+            while (true)
+            {
+                try
+                {
+                    // 每1小时扫描一次
+                    Thread.Sleep(TimeSpan.FromHours(1));
+
+                    ClearExpiredLogs();
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        #endregion Auto Clear Logs
+
+        #region Flush Engine
+
+        private static void FlushInternal(
+            List<LogEvent> logs)
+        {
+            if (!config.EnableFile)
+                return;
+
+            if (logs == null || logs.Count == 0)
+                return;
 
             lock (fileLock)
             {
@@ -228,44 +313,70 @@ namespace SNetLogs
 
                 foreach (var kv in grouped)
                 {
-                    string dir = Path.Combine(BaseDir, config.LogDirectory, kv.Key);
-                    Directory.CreateDirectory(dir);
-
-                    string file = Path.Combine(
-                        dir,
-                        DateTime.Now.ToString("yyyy-MM-dd") + ".log");
-
-                    using (var sw = new StreamWriter(file, true, Encoding.UTF8))
+                    try
                     {
-                        foreach (var log in kv.Value)
+                        string dir = Path.Combine(
+                            BaseDir,
+                            config.LogDirectory,
+                            kv.Key);
+
+                        Directory.CreateDirectory(dir);
+
+                        string file = Path.Combine(
+                            dir,
+                            DateTime.Now.ToString("yyyy-MM-dd") + ".log");
+
+                        using (var sw = new StreamWriter(
+                            file,
+                            true,
+                            Encoding.UTF8))
                         {
-                            sw.WriteLine(Format(log));
+                            foreach (var log in kv.Value)
+                            {
+                                sw.WriteLine(Format(log));
+                            }
                         }
+                    }
+                    catch
+                    {
                     }
                 }
             }
         }
 
-        #endregion Flush Engine（V4优化）
+        #endregion Flush Engine
 
         #region Console
 
-        private static void WriteConsole(string module, string level, string msg, string traceId)
+        private static void WriteConsole(
+            string module,
+            string level,
+            string msg,
+            string traceId)
         {
             lock (fileLock)
             {
                 ConsoleColor color = ConsoleColor.White;
 
-                if (level == "INFO") color = ConsoleColor.Green;
-                else if (level == "ERROR") color = ConsoleColor.Red;
-                else if (level == "FATAL") color = ConsoleColor.DarkRed;
-                else if (level == "DEBUG") color = ConsoleColor.Gray;
+                if (level == "INFO")
+                    color = ConsoleColor.Green;
+                else if (level == "ERROR")
+                    color = ConsoleColor.Red;
+                else if (level == "FATAL")
+                    color = ConsoleColor.DarkRed;
+                else if (level == "DEBUG")
+                    color = ConsoleColor.Gray;
 
                 Console.ForegroundColor = color;
 
                 Console.WriteLine(
-                    $"[{DateTime.Now:HH:mm:ss}] [{config.Environment}] [{module}] [{level}] " +
-                    (traceId != null ? $"[Trace:{traceId}] " : "") +
+                    $"[{DateTime.Now:HH:mm:ss}] " +
+                    $"[{config.Environment}] " +
+                    $"[{module}] " +
+                    $"[{level}] " +
+                    (traceId != null
+                        ? $"[Trace:{traceId}] "
+                        : "") +
                     msg);
 
                 Console.ResetColor();
@@ -278,22 +389,28 @@ namespace SNetLogs
 
         private static string Format(LogEvent e)
         {
-            return $"[{e.Time:yyyy-MM-dd HH:mm:ss.fff}] " +
-                   $"[{config.Environment}] " +
-                   $"[{e.Module}] " +
-                   $"[{e.Level}] " +
-                   (e.TraceId != null ? $"[Trace:{e.TraceId}] " : "") +
-                   e.Message;
+            return
+                $"[{e.Time:yyyy-MM-dd HH:mm:ss.fff}] " +
+                $"[{config.Environment}] " +
+                $"[{e.Module}] " +
+                $"[{e.Level}] " +
+                (e.TraceId != null
+                    ? $"[Trace:{e.TraceId}] "
+                    : "") +
+                e.Message;
         }
 
-        private static Dictionary<string, List<LogEvent>> Group(List<LogEvent> logs)
+        private static Dictionary<string, List<LogEvent>> Group(
+            List<LogEvent> logs)
         {
-            var dict = new Dictionary<string, List<LogEvent>>();
+            var dict =
+                new Dictionary<string, List<LogEvent>>();
 
             foreach (var l in logs)
             {
                 if (!dict.ContainsKey(l.Module))
-                    dict[l.Module] = new List<LogEvent>();
+                    dict[l.Module] =
+                        new List<LogEvent>();
 
                 dict[l.Module].Add(l);
             }
@@ -303,29 +420,52 @@ namespace SNetLogs
 
         private static void CreateDirs()
         {
-            Directory.CreateDirectory(Path.Combine(BaseDir, config.LogDirectory));
+            Directory.CreateDirectory(
+                Path.Combine(
+                    BaseDir,
+                    config.LogDirectory));
         }
 
         private static void ClearExpiredLogs()
         {
             try
             {
-                string root = Path.Combine(BaseDir, config.LogDirectory);
+                string root = Path.Combine(
+                    BaseDir,
+                    config.LogDirectory);
 
-                if (!Directory.Exists(root)) return;
+                if (!Directory.Exists(root))
+                    return;
 
-                foreach (var f in Directory.GetFiles(root, "*.log", SearchOption.AllDirectories))
+                foreach (var file in Directory.GetFiles(
+                    root,
+                    "*.log",
+                    SearchOption.AllDirectories))
                 {
-                    if (File.GetCreationTime(f) < DateTime.Now.AddDays(-config.KeepDays))
-                        File.Delete(f);
+                    try
+                    {
+                        DateTime createTime =
+                            File.GetCreationTime(file);
+
+                        if (createTime <
+                            DateTime.Now.AddDays(-config.KeepDays))
+                        {
+                            File.Delete(file);
+                        }
+                    }
+                    catch
+                    {
+                    }
                 }
             }
-            catch { }
+            catch
+            {
+            }
         }
 
         #endregion Helpers
 
-        #region Model
+        #region Models
 
         private class LogEvent
         {
@@ -336,6 +476,23 @@ namespace SNetLogs
             public DateTime Time;
         }
 
-        #endregion Model
+        public class LogConfig
+        {
+            public string Environment { get; set; }
+
+            public bool EnableConsole { get; set; }
+
+            public bool EnableFile { get; set; }
+
+            public int BatchSize { get; set; }
+
+            public int KeepDays { get; set; }
+
+            public string LogDirectory { get; set; }
+
+            public string ArchiveDirectory { get; set; }
+        }
+
+        #endregion Models
     }
 }
