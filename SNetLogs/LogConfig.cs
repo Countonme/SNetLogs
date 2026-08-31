@@ -6,50 +6,22 @@ namespace SNetLogs
 {
     public class LogConfig
     {
-        /// <summary>
-        /// 日志目录
-        /// </summary>
-        public string LogDirectory { get; set; } = "logs";
+        public string Environment { get; set; }
 
-        /// <summary>
-        /// 归档目录
-        /// </summary>
-        public string ArchiveDirectory { get; set; } = "Archive";
+        public bool EnableConsole { get; set; }
 
-        /// <summary>
-        /// 保存天数
-        /// </summary>
-        public int KeepDays { get; set; } = 30;
+        public bool EnableFile { get; set; }
 
-        /// <summary>
-        /// 最大文件MB
-        /// </summary>
-        public int MaxFileSizeMB { get; set; } = 50;
+        public int BatchSize { get; set; }
 
-        /// <summary>
-        /// 是否控制台输出
-        /// </summary>
-        public bool EnableConsole { get; set; } = true;
+        public int FlushIntervalMs { get; set; }
 
-        /// <summary>
-        /// 是否写文件
-        /// </summary>
-        public bool EnableFile { get; set; } = true;
+        public int KeepDays { get; set; }
 
-        /// <summary>
-        /// 是否Debug模式
-        /// </summary>
-        public bool EnableDebug { get; set; } = true;
+        public int QueueCapacity { get; set; }
 
-        /// <summary>
-        /// 当前环境
-        /// DEBUG DEV RUN PROD
-        /// </summary>
-        public string Environment { get; set; } = "RUN";
+        public string LogDirectory { get; set; }
 
-        /// <summary>
-        /// 批量写关键参数
-        /// </summary>
-        public int BatchSize { get; set; } = 50;
+        public string ArchiveDirectory { get; set; }
     }
 }

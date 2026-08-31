@@ -8,10 +8,7 @@ namespace SNetLogs
     {
         public static string ToLogString(this Exception ex)
         {
-            return
-                $"Message:{ex.Message}\n" +
-                $"StackTrace:{ex.StackTrace}\n" +
-                $"Inner:{ex.InnerException}";
+            return $"Message:{ex.Message}\n" + $"StackTrace:{ex.StackTrace}\n" + $"Inner:{ex.InnerException}";
         }
     }
 }
