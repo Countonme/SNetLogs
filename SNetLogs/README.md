@@ -1,4 +1,4 @@
-# 📦 SNetLogs V6
+# 📦 SNetLogs V7
 
 ## Enterprise High-Performance Logging Framework for .NET
 

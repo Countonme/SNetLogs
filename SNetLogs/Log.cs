@@ -129,54 +129,66 @@ namespace SNetLogs
             try
             {
                 Init();
-
                 NormalizeConfig();
-
-                queue = new BlockingCollection<LogEvent>(new ConcurrentQueue<LogEvent>(), config.QueueCapacity);
-
-                CreateDirs();
-
-                // 启动时清理
-                ClearExpiredLogs();
-
-                initialized = true;
-
-                // ============================================
-                // Consumer
-                // ============================================
-
-                consumerThread = new Thread(Consume)
-                {
-                    IsBackground = true,
-
-                    Name = "SNetLogs-Consumer",
-
-                    Priority = ThreadPriority.AboveNormal
-                };
-
-                consumerThread.Start();
-
-                // ============================================
-                // Clean
-                // ============================================
-
-                cleanThread = new Thread(TimerClearExpiredLogs)
-                {
-                    IsBackground = true,
-
-                    Name = "SNetLogs-Clean"
-                };
-
-                cleanThread.Start();
             }
             catch
             {
                 config = DefaultConfig();
-
-                queue = new BlockingCollection<LogEvent>(new ConcurrentQueue<LogEvent>(), config.QueueCapacity);
-
-                initialized = true;
+                NormalizeConfig();
             }
+
+            try
+            {
+                queue = new BlockingCollection<LogEvent>(
+                    new ConcurrentQueue<LogEvent>(),
+                    config.QueueCapacity);
+
+                CreateDirs();
+
+                ClearExpiredLogs();
+            }
+            catch
+            {
+                // 即使目录清理等操作失败，也不能影响日志 Consumer
+                if (config == null)
+                {
+                    config = DefaultConfig();
+                }
+
+                if (queue == null)
+                {
+                    queue = new BlockingCollection<LogEvent>(
+                        new ConcurrentQueue<LogEvent>(),
+                        config.QueueCapacity);
+                }
+            }
+
+            // ============================================
+            // 无论前面是否异常，都必须启动 Consumer
+            // ============================================
+
+            initialized = true;
+
+            consumerThread = new Thread(Consume)
+            {
+                IsBackground = true,
+                Name = "SNetLogs-Consumer",
+                Priority = ThreadPriority.AboveNormal
+            };
+
+            consumerThread.Start();
+
+            // ============================================
+            // 清理线程
+            // ============================================
+
+            cleanThread = new Thread(TimerClearExpiredLogs)
+            {
+                IsBackground = true,
+                Name = "SNetLogs-Clean"
+            };
+
+            cleanThread.Start();
         }
 
         #endregion Static Constructor
@@ -920,6 +932,10 @@ namespace SNetLogs
             sb.Append("] ");
 
             sb.Append('[');
+            sb.Append(e.Level);
+            sb.Append("] ");
+
+            sb.Append('[');
             sb.Append(config.Environment);
             sb.Append("] ");
 
@@ -945,10 +961,6 @@ namespace SNetLogs
 
             sb.Append('[');
             sb.Append(e.Module);
-            sb.Append("] ");
-
-            sb.Append('[');
-            sb.Append(e.Level);
             sb.Append("] ");
 
             if (!string.IsNullOrWhiteSpace(e.TraceId))
